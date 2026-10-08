@@ -154,6 +154,53 @@ class GameFlowTest extends BotFlowTest {
         Assertions.assertEquals(3, voting.getCurrentRound().getPlayedCards().size());
     }
 
+    /**
+     * Las opciones de voto salían de {@code Player.getPlayedCard()}, que el motor no rellena nunca:
+     * no le llegaban a nadie y la partida se quedaba parada en la primera votación.
+     */
+    @Test
+    void everyoneGetsTheVoteOptionsAndTheRoundEnds() {
+        startedGame();
+
+        for (long player : List.of(CREATOR, PLAYER_TWO, PLAYER_THREE)) {
+            playFirstCardAs(player);
+        }
+
+        for (long player : List.of(CREATOR, PLAYER_TWO, PLAYER_THREE)) {
+            Assertions.assertEquals(2, messages.lastTo(player).callbackData().size(), () -> "el jugador " + player + " tiene que poder votar las otras dos cartas");
+            voteFirstOptionAs(player);
+        }
+
+        Game next = gameService.getByRoom(room());
+        Assertions.assertEquals(1, next.getCurrentRound().getRoundNumber(), "con todos los votos, la ronda se cierra y empieza la siguiente");
+        Assertions.assertEquals(RoundStatusEnum.PLAYING, next.getCurrentRound().getStatus());
+    }
+
+    /**
+     * Al acabar, la partida se borraba con el permiso del creador, pero la última ronda la puede cerrar
+     * cualquiera: si el último voto no era suyo, la partida se quedaba colgada en ENDING.
+     */
+    @Test
+    void theGameEndsEvenIfTheLastVoteIsNotTheCreators() {
+        createGame();
+        joinAs(PLAYER_TWO);
+        joinAs(PLAYER_THREE);
+
+        logInAs(CREATOR, GROUP_CHAT, "group");
+        cahService.setVotationMode(room(), VotationModeEnum.DEMOCRACY);
+        cahService.setNumberOfRoundsToEnd(room(), 1);
+        game.gameStartQuery(GROUP_CHAT, "cb");
+
+        for (long player : List.of(CREATOR, PLAYER_TWO, PLAYER_THREE)) {
+            playFirstCardAs(player);
+        }
+        for (long player : List.of(CREATOR, PLAYER_TWO, PLAYER_THREE)) {
+            voteFirstOptionAs(player);
+        }
+
+        Assertions.assertNull(gameService.getByRoom(room()), "la partida tiene que borrarse al terminar");
+    }
+
     @Test
     void playingTwiceIsRefusedWithAnExplanation() {
         startedGame();
@@ -184,6 +231,15 @@ class GameFlowTest extends BotFlowTest {
     }
 
     // ///////////// Apoyo //////////////////
+
+    private void voteFirstOptionAs(long telegramId) {
+        logInAs(telegramId, telegramId, "private");
+
+        String option = messages.lastTo(telegramId).callbackData().get(0);
+        Assertions.assertTrue(option.startsWith("vote_card__"), "no le han llegado las opciones de voto");
+
+        game.playerVoteCardQuery("cb", option.substring("vote_card__".length()));
+    }
 
     private Room room() {
         return roomResolver.resolveRoom(GROUP_CHAT, "Grupo de pruebas");

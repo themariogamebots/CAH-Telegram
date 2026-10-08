@@ -522,7 +522,8 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
         Integer creatorMessageId = telegramGame.getCreatorMessageId();
 
         telegramGameService.deleteGameData(game);
-        cahService.deleteGameByCreator(game.getRoom());
+        // No deleteGameByCreator: la última ronda la puede cerrar cualquiera, no solo el creador
+        cahService.endGame(game);
 
         for (PlayerMessage playerMessage : playerMessages) {
             botMessageService.deleteMessage(playerMessage.chatId(), playerMessage.messageId());
@@ -534,32 +535,41 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
     private void showPlayedCardToItsPlayer(TelegramGame telegramGame, Player player) {
         TelegramPlayer telegramPlayer = telegramGameService.getByPlayer(player);
         Long playerChatId = chatIdOf(player.getUser());
-        if (telegramPlayer == null || playerChatId == null || player.getPlayedCard() == null) return;
-
         Round round = telegramGame.getGame().getCurrentRound();
+        Card playedCard = playedCardOf(round, player);
+        if (telegramPlayer == null || playerChatId == null || playedCard == null) return;
 
-        botMessageService.editMessage(playerChatId, telegramPlayer.getHandMessageId(), MessageFormat.format(i18NService.get("PLAYER_SELECTED_CARD"), round.getRoundNumber(), round.getRoundBlackCard().getText(), player.getPlayedCard().getCard().getText()));
-    }
-
-    private void showVoteToItsVoter(TelegramGame telegramGame, Player player) {
-        TelegramPlayer telegramPlayer = telegramGameService.getByPlayer(player);
-        Long playerChatId = chatIdOf(player.getUser());
-        if (telegramPlayer == null || playerChatId == null || player.getPlayedCard() == null || player.getVotedCard() == null)
-            return;
-
-        Round round = telegramGame.getGame().getCurrentRound();
-
-        botMessageService.editMessage(playerChatId, telegramPlayer.getHandMessageId(), MessageFormat.format(i18NService.get("PLAYER_VOTED_CARD"), round.getRoundNumber(), round.getRoundBlackCard().getText(), player.getPlayedCard().getCard().getText(), player.getVotedCard().getCard().getText()));
+        botMessageService.editMessage(playerChatId, telegramPlayer.getHandMessageId(), MessageFormat.format(i18NService.get("PLAYER_SELECTED_CARD"), round.getRoundNumber(), round.getRoundBlackCard().getText(), playedCard.getText()));
     }
 
     /**
-     * Enseña a un jugador las cartas que puede votar, que son todas menos la suya.
+     * Confirma el voto en el privado. El presidente de la ronda no ha jugado carta, así que tiene su
+     * propio texto.
+     */
+    private void showVoteToItsVoter(TelegramGame telegramGame, Player player) {
+        TelegramPlayer telegramPlayer = telegramGameService.getByPlayer(player);
+        Long playerChatId = chatIdOf(player.getUser());
+        Round round = telegramGame.getGame().getCurrentRound();
+        Card votedCard = votedCardOf(round, player);
+        if (telegramPlayer == null || playerChatId == null || votedCard == null) return;
+
+        Card playedCard = playedCardOf(round, player);
+        String message = playedCard != null
+                ? MessageFormat.format(i18NService.get("PLAYER_VOTED_CARD"), round.getRoundNumber(), round.getRoundBlackCard().getText(), playedCard.getText(), votedCard.getText())
+                : MessageFormat.format(i18NService.get("PLAYER_PRESIDENT_VOTED_CARD"), round.getRoundNumber(), round.getRoundBlackCard().getText(), votedCard.getText());
+
+        botMessageService.editMessage(playerChatId, telegramPlayer.getHandMessageId(), message);
+    }
+
+    /**
+     * Enseña a un jugador las cartas que puede votar, que son todas menos la suya. El presidente de
+     * la ronda no ha jugado carta, así que tiene su propio texto.
      */
     private void sendVoteOptions(TelegramGame telegramGame, TelegramPlayer telegramPlayer, Round round) {
         Player player = telegramPlayer.getPlayer();
 
         Long playerChatId = chatIdOf(player.getUser());
-        if (playerChatId == null || player.getPlayedCard() == null) return;
+        if (playerChatId == null) return;
 
         InlineKeyboardMarkup.InlineKeyboardMarkupBuilder keyboard = InlineKeyboardMarkup.builder();
         for (PlayedCard playedCard : round.getPlayedCards()) {
@@ -568,7 +578,28 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder().text(playedCard.getCard().getText()).callbackData("vote_card__" + playedCard.getCard().getId()).build()));
         }
 
-        botMessageService.editMessage(playerChatId, telegramPlayer.getHandMessageId(), MessageFormat.format(i18NService.get("PLAYER_VOTE_CARD"), round.getRoundNumber(), round.getRoundBlackCard().getText(), player.getPlayedCard().getCard().getText()), keyboard.build());
+        Card playedCard = playedCardOf(round, player);
+        String message = playedCard != null
+                ? MessageFormat.format(i18NService.get("PLAYER_VOTE_CARD"), round.getRoundNumber(), round.getRoundBlackCard().getText(), playedCard.getText())
+                : MessageFormat.format(i18NService.get("PLAYER_PRESIDENT_VOTE_CARD"), round.getRoundNumber(), round.getRoundBlackCard().getText());
+
+        botMessageService.editMessage(playerChatId, telegramPlayer.getHandMessageId(), message, keyboard.build());
+    }
+
+    /**
+     * La carta que ha jugado {@code player} en la ronda, o {@code null}. Sale de la ronda y no de
+     * {@code Player.getPlayedCard()}, que el motor no rellena nunca.
+     */
+    private Card playedCardOf(Round round, Player player) {
+        return round.getPlayedCards().stream().filter(playedCard -> Objects.equals(playedCard.getPlayer().getId(), player.getId())).map(PlayedCard::getCard).findFirst().orElse(null);
+    }
+
+    /**
+     * La carta que ha votado {@code player} en la ronda, o {@code null}. Sale de la ronda y no de
+     * {@code Player.getVotedCard()}, que el motor no rellena nunca.
+     */
+    private Card votedCardOf(Round round, Player player) {
+        return round.getVotedCards().stream().filter(votedCard -> Objects.equals(votedCard.getPlayer().getId(), player.getId())).map(org.themarioga.engine.cah.models.game.VotedCard::getCard).findFirst().orElse(null);
     }
 
     private void editRoundMessage(TelegramGame telegramGame, String message) {
