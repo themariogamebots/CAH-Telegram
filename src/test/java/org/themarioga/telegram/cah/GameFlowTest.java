@@ -50,6 +50,8 @@ class GameFlowTest extends BotFlowTest {
     @Autowired
     private GameConfig gameConfig;
     @Autowired
+    private org.themarioga.engine.cah.services.intf.game.RoundResultService roundResultService;
+    @Autowired
     private org.themarioga.commons.engine.services.intf.UserService userService;
 
     private final RecordingBotMessageService messages = CCLH_MESSAGES;
@@ -164,6 +166,7 @@ class GameFlowTest extends BotFlowTest {
     @Test
     void everyoneGetsTheVoteOptionsAndTheRoundEnds() {
         startedGame();
+        java.util.UUID blackCardId = gameService.getByRoom(room()).getCurrentRound().getRoundBlackCard().getId();
 
         for (long player : List.of(CREATOR, PLAYER_TWO, PLAYER_THREE)) {
             playFirstCardAs(player);
@@ -177,6 +180,7 @@ class GameFlowTest extends BotFlowTest {
         Game next = gameService.getByRoom(room());
         Assertions.assertEquals(1, next.getCurrentRound().getRoundNumber(), "con todos los votos, la ronda se cierra y empieza la siguiente");
         Assertions.assertEquals(RoundStatusEnum.PLAYING, next.getCurrentRound().getStatus());
+        Assertions.assertEquals(3, roundResultService.getByBlackCardId(blackCardId).size(), "la ronda cerrada deja una fila de histórico por carta");
     }
 
     /**
