@@ -23,9 +23,10 @@ class SchemaBaselineTest {
 
     /**
      * Textos recuperados de las migraciones antiguas, más los ocho que hubo que escribir y el freno
-     * de la difusión (V2.0.0_2), más los dos del privado del presidente de ronda (V2.0.1_1).
+     * de la difusión (V2.0.0_2), más los dos del privado del presidente de ronda (V2.0.1_1) y los
+     * seis de los jugadores IA (V2.1.0_2).
      */
-    private static final int EXPECTED_TAGS = 218;
+    private static final int EXPECTED_TAGS = 224;
 
     @Autowired
     private LanguageService languageService;

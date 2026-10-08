@@ -395,6 +395,30 @@ public class CCLHApplicationServiceImpl implements ApplicationService {
             cclhBotMessageService.answerCallbackQuery(callbackQuery.getId());
         });
 
+        callbackQueryHandlerMap.put("game_add_ai", (callbackQuery, data) -> {
+            try {
+                cclhTelegramService.loginUser(callbackQuery.getFrom().getId());
+
+                cclhTelegramService.gameAddAIPlayerQuery(callbackQuery.getMessage().getChatId(), callbackQuery.getId());
+            } catch (Exception e) {
+                logger.error(e.getMessage(), e);
+            }
+
+            cclhBotMessageService.answerCallbackQuery(callbackQuery.getId());
+        });
+
+        callbackQueryHandlerMap.put("game_remove_ai", (callbackQuery, data) -> {
+            try {
+                cclhTelegramService.loginUser(callbackQuery.getFrom().getId());
+
+                cclhTelegramService.gameRemoveAIPlayerQuery(callbackQuery.getMessage().getChatId(), callbackQuery.getId());
+            } catch (Exception e) {
+                logger.error(e.getMessage(), e);
+            }
+
+            cclhBotMessageService.answerCallbackQuery(callbackQuery.getId());
+        });
+
         callbackQueryHandlerMap.put("play_card", (callbackQuery, data) -> {
             try {
                 cclhTelegramService.loginUser(callbackQuery.getFrom().getId());

@@ -62,6 +62,10 @@ public interface CCLHTelegramService {
 
     void gameStartQuery(long chatId, String callbackQueryId);
 
+    void gameAddAIPlayerQuery(long chatId, String callbackQueryId);
+
+    void gameRemoveAIPlayerQuery(long chatId, String callbackQueryId);
+
     // ///////////// Ronda //////////////////
 
     void playerPlayCardQuery(String callbackQueryId, String data);

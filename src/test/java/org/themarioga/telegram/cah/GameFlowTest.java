@@ -13,6 +13,7 @@ import org.themarioga.engine.cah.enums.VotationModeEnum;
 import org.themarioga.engine.cah.models.dictionaries.Card;
 import org.themarioga.engine.cah.models.dictionaries.Dictionary;
 import org.themarioga.engine.cah.models.game.Game;
+import org.themarioga.engine.cah.models.game.Player;
 import org.themarioga.engine.cah.models.game.PlayerHandCard;
 import org.themarioga.engine.cah.services.intf.CAHService;
 import org.themarioga.engine.cah.services.intf.dictionaries.CardService;
@@ -48,6 +49,8 @@ class GameFlowTest extends BotFlowTest {
     private CardService cardService;
     @Autowired
     private GameConfig gameConfig;
+    @Autowired
+    private org.themarioga.commons.engine.services.intf.UserService userService;
 
     private final RecordingBotMessageService messages = CCLH_MESSAGES;
 
@@ -228,6 +231,151 @@ class GameFlowTest extends BotFlowTest {
 
         Assertions.assertNull(gameService.getByRoom(room()), "la partida tiene que desaparecer");
         Assertions.assertTrue(messages.deletedFrom().containsAll(List.of(CREATOR, PLAYER_TWO, PLAYER_THREE)), "hay que borrar la mano de cada jugador de su privado");
+    }
+
+    // ///////////// Jugadores IA //////////////////
+
+    @Test
+    void theCreatorAddsAndRemovesAIPlayers() {
+        createGame();
+        joinAs(PLAYER_TWO);
+
+        addAIPlayer();
+
+        Game withAi = gameService.getByRoom(room());
+        Assertions.assertEquals(3, withAi.getPlayers().size());
+        Assertions.assertEquals(1, withAi.getPlayers().stream().filter(Player::isAi).count());
+        Assertions.assertEquals("IA 1", withAi.getPlayers().stream().filter(Player::isAi).findFirst().orElseThrow().getUser().getName());
+
+        RecordingBotMessageService.Sent menu = messages.lastTo(GROUP_CHAT);
+        Assertions.assertTrue(menu.callbackData().contains("game_remove_ai"));
+        Assertions.assertTrue(menu.callbackData().contains("game_start"), "dos humanos y una IA ya pueden empezar");
+
+        logInAsCallback(CREATOR, GROUP_CHAT, "group");
+        game.gameRemoveAIPlayerQuery(GROUP_CHAT, "cb");
+
+        Assertions.assertEquals(2, gameService.getByRoom(room()).getPlayers().size());
+        Assertions.assertFalse(messages.lastTo(GROUP_CHAT).callbackData().contains("game_remove_ai"));
+    }
+
+    @Test
+    void onlyTheCreatorAddsAIPlayers() {
+        createGame();
+        joinAs(PLAYER_TWO);
+
+        logInAsCallback(PLAYER_TWO, GROUP_CHAT, "group");
+        messages.clear();
+        game.gameAddAIPlayerQuery(GROUP_CHAT, "cb");
+
+        Assertions.assertEquals(2, gameService.getByRoom(room()).getPlayers().size());
+        Assertions.assertFalse(messages.answeredCallbacks().isEmpty());
+        Assertions.assertFalse(messages.answeredCallbacks().get(0).startsWith("ERROR_"), "el aviso no está traducido");
+    }
+
+    /**
+     * Un humano con dos IAs llega al mínimo de jugadores, pero no al de humanos: no se ofrece empezar.
+     */
+    @Test
+    void oneHumanAndTwoAIPlayersCannotStart() {
+        createGame();
+        addAIPlayer();
+        addAIPlayer();
+
+        Assertions.assertEquals(3, gameService.getByRoom(room()).getPlayers().size());
+        Assertions.assertFalse(messages.lastTo(GROUP_CHAT).callbackData().contains("game_start"));
+    }
+
+    /**
+     * Partida CLASSIC de tres rondas con el creador, otro humano y una IA: la presidencia pasa por los
+     * tres. En las rondas de los humanos el grupo ve las cartas mientras decide el presidente; en la
+     * de la IA, la ronda se cierra sola con la jugada del último humano y la partida termina.
+     */
+    @Test
+    void aClassicGameWithAnAIPlayerIsPlayedToTheEnd() {
+        createGame();
+        joinAs(PLAYER_TWO);
+        addAIPlayer();
+
+        logInAs(CREATOR, GROUP_CHAT, "group");
+        cahService.setVotationMode(room(), VotationModeEnum.CLASSIC);
+        cahService.setNumberOfRoundsToEnd(room(), 3);
+        game.gameStartQuery(GROUP_CHAT, "cb");
+
+        // Ronda 0: preside el creador
+        Assertions.assertEquals(1, gameService.getByRoom(room()).getCurrentRound().getPlayedCards().size(), "la IA juega en cuanto empieza la ronda");
+        messages.clear();
+        playFirstCardAs(PLAYER_TWO);
+
+        Game voting = gameService.getByRoom(room());
+        Assertions.assertEquals(RoundStatusEnum.VOTING, voting.getCurrentRound().getStatus());
+        assertTheGroupSeesThePlayedCards(voting);
+        Assertions.assertTrue(messages.lastTo(CREATOR).callbackData().stream().allMatch(data -> data.startsWith("vote_card__")), "el presidente vota por privado");
+
+        voteFirstOptionAs(CREATOR);
+
+        // Ronda 1: preside el otro humano
+        Assertions.assertEquals(1, gameService.getByRoom(room()).getCurrentRound().getRoundNumber());
+        playFirstCardAs(CREATOR);
+        voteFirstOptionAs(PLAYER_TWO);
+
+        // Ronda 2: preside la IA
+        Game lastRound = gameService.getByRoom(room());
+        Assertions.assertEquals(2, lastRound.getCurrentRound().getRoundNumber());
+        Assertions.assertTrue(lastRound.getCurrentRound().getRoundPresident().isAi());
+
+        playFirstCardAs(CREATOR);
+        messages.clear();
+        playFirstCardAs(PLAYER_TWO);
+
+        Assertions.assertNull(gameService.getByRoom(room()), "la IA ha cerrado la última ronda y con ella la partida");
+        Assertions.assertTrue(messages.sentTo(GROUP_CHAT).stream().anyMatch(sent -> !sent.edited()), "el ganador se anuncia en el grupo");
+        Assertions.assertTrue(userService.getAllUsers().stream().noneMatch(user -> user.getUsername().startsWith(CAHService.AI_USERNAME_PREFIX)), "el usuario de la IA desaparece con la partida");
+    }
+
+    /**
+     * En democracia la IA vota en cuanto se abre la votación, y el grupo y los privados enseñan las
+     * cartas en el mismo orden.
+     */
+    @Test
+    void inDemocracyTheAIPlayerVotesAndTheOrderIsTheSameEverywhere() {
+        createGame();
+        joinAs(PLAYER_TWO);
+        addAIPlayer();
+
+        logInAs(CREATOR, GROUP_CHAT, "group");
+        cahService.setVotationMode(room(), VotationModeEnum.DEMOCRACY);
+        game.gameStartQuery(GROUP_CHAT, "cb");
+
+        playFirstCardAs(CREATOR);
+        messages.clear();
+        playFirstCardAs(PLAYER_TWO);
+
+        Game voting = gameService.getByRoom(room());
+        Assertions.assertEquals(RoundStatusEnum.VOTING, voting.getCurrentRound().getStatus());
+        Assertions.assertEquals(1, voting.getCurrentRound().getVotedCards().size(), "la IA ya ha votado");
+
+        String groupText = assertTheGroupSeesThePlayedCards(voting);
+        for (long player : List.of(CREATOR, PLAYER_TWO)) {
+            List<String> options = messages.lastTo(player).buttonTexts();
+            List<Integer> positions = options.stream().map(groupText::indexOf).toList();
+            Assertions.assertEquals(positions.stream().sorted().toList(), positions, () -> "el privado de " + player + " no sigue el orden del grupo");
+        }
+    }
+
+    private void addAIPlayer() {
+        logInAsCallback(CREATOR, GROUP_CHAT, "group");
+
+        game.gameAddAIPlayerQuery(GROUP_CHAT, "cb");
+    }
+
+    private String assertTheGroupSeesThePlayedCards(Game game) {
+        RecordingBotMessageService.Sent roundMessage = messages.sentTo(GROUP_CHAT).stream().filter(RecordingBotMessageService.Sent::edited).reduce((first, second) -> second).orElseThrow(() -> new AssertionError("no se ha editado el mensaje de la ronda"));
+
+        for (var playedCard : game.getCurrentRound().getPlayedCards()) {
+            Assertions.assertTrue(roundMessage.text().contains(playedCard.getCard().getText()), () -> "falta la carta " + playedCard.getCard().getText());
+        }
+
+        return roundMessage.text();
     }
 
     // ///////////// Apoyo //////////////////

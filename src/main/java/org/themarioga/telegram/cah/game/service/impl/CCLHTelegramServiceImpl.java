@@ -59,8 +59,12 @@ import org.themarioga.telegram.cah.models.TelegramGame;
 import org.themarioga.telegram.cah.services.intf.TelegramGameService;
 
 import java.text.MessageFormat;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.Random;
 import java.util.UUID;
 
 /**
@@ -420,6 +424,36 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
         });
     }
 
+    @Override
+    @Transactional(propagation = Propagation.REQUIRED, rollbackFor = ApplicationException.class)
+    public void gameAddAIPlayerQuery(long chatId, String callbackQueryId) {
+        requireSession();
+
+        guarded(() -> {
+            TelegramGame telegramGame = getGameAndCheckCreator(chatId);
+
+            // Se numeran por orden: quitar una IA quita siempre la última, así que no se repiten
+            long aiPlayers = telegramGame.getGame().getPlayers().stream().filter(Player::isAi).count();
+            cahService.addAIPlayer(telegramGame.getGame().getRoom(), MessageFormat.format(i18NService.get("AI_PLAYER_NAME"), aiPlayers + 1));
+
+            sendMainMenu(telegramGame);
+        });
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.REQUIRED, rollbackFor = ApplicationException.class)
+    public void gameRemoveAIPlayerQuery(long chatId, String callbackQueryId) {
+        requireSession();
+
+        guarded(() -> {
+            TelegramGame telegramGame = getGameAndCheckCreator(chatId);
+
+            cahService.removeAIPlayer(telegramGame.getGame().getRoom());
+
+            sendMainMenu(telegramGame);
+        });
+    }
+
     // ///////////// Ronda //////////////////
 
     @Override
@@ -438,6 +472,10 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
                 showPlayedCardToItsPlayer(telegramGame, playerOf(game, user));
             } else if (round.getStatus() == RoundStatusEnum.VOTING) {
                 openVoting(telegramGame, game, round);
+            } else if (round.getStatus() == RoundStatusEnum.ENDING) {
+                // Una IA presidía la ronda y ha elegido ganadora en cuanto se abrió la votación. El
+                // mensaje de fin de ronda ya enseña todas las cartas jugadas.
+                endRound(telegramGame, game, round);
             }
         });
     }
@@ -463,8 +501,8 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
     }
 
     /**
-     * Abre la votación: en democracia votan todos y las cartas se enseñan también en el grupo; en
-     * los otros modos decide el presidente de la ronda.
+     * Abre la votación: las cartas jugadas se enseñan en el grupo, y en democracia votan todos
+     * mientras que en los otros modos decide el presidente de la ronda.
      */
     private void openVoting(TelegramGame telegramGame, Game game, Round round) {
         if (game.getVotationMode() == VotationModeEnum.DEMOCRACY) {
@@ -485,8 +523,15 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
             return;
         }
 
+        editRoundMessage(telegramGame, getGamePresidentVoteCardMessage(round, president));
+
+        // Una IA de presidente no llega aquí: vota dentro del motor y la ronda ya viene cerrada
         TelegramPlayer telegramPresident = telegramGameService.getByPlayer(president);
-        if (telegramPresident != null) sendVoteOptions(telegramGame, telegramPresident, round);
+        if (telegramPresident != null) {
+            sendVoteOptions(telegramGame, telegramPresident, round);
+        } else {
+            logger.debug("El presidente {} de la ronda {} no tiene chat de Telegram", president.getId(), round.getId());
+        }
     }
 
     private void endRound(TelegramGame telegramGame, Game game, Round round) {
@@ -572,7 +617,7 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
         if (playerChatId == null) return;
 
         InlineKeyboardMarkup.InlineKeyboardMarkupBuilder keyboard = InlineKeyboardMarkup.builder();
-        for (PlayedCard playedCard : round.getPlayedCards()) {
+        for (PlayedCard playedCard : shuffledPlayedCards(round)) {
             if (Objects.equals(playedCard.getPlayer().getId(), player.getId())) continue;
 
             keyboard.keyboardRow(new InlineKeyboardRow(InlineKeyboardButton.builder().text(playedCard.getCard().getText()).callbackData("vote_card__" + playedCard.getCard().getId()).build()));
@@ -856,11 +901,17 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
         if (game.getStatus() == GameStatusEnum.CREATED) {
             if (game.getPlayers().size() < game.getMaxNumberOfPlayers()) {
                 keyboard.keyboardRow(new InlineKeyboardRow(button("GAME_JOIN_BUTTON", "game_join")));
+                keyboard.keyboardRow(new InlineKeyboardRow(button("GAME_ADD_AI_BUTTON", "game_add_ai")));
+            }
+
+            if (game.getPlayers().stream().anyMatch(Player::isAi)) {
+                keyboard.keyboardRow(new InlineKeyboardRow(button("GAME_REMOVE_AI_BUTTON", "game_remove_ai")));
             }
 
             keyboard.keyboardRow(new InlineKeyboardRow(button("GAME_CONFIGURE_BUTTON", "game_configure")));
 
-            if (game.getPlayers().size() >= gameConfig.getDefaultMinNumberOfPlayers()) {
+            long humanPlayers = game.getPlayers().stream().filter(player -> !player.isAi()).count();
+            if (game.getPlayers().size() >= gameConfig.getDefaultMinNumberOfPlayers() && humanPlayers >= gameConfig.getMinHumanPlayers()) {
                 keyboard.keyboardRow(new InlineKeyboardRow(button("GAME_START_BUTTON", "game_start")));
             }
         }
@@ -1015,6 +1066,9 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
      * plataforma).
      */
     private Long chatIdOf(User user) {
+        // Los jugadores IA no tienen chat, y no es ningún error
+        if (user.getUsername() != null && user.getUsername().startsWith(CAHService.AI_USERNAME_PREFIX)) return null;
+
         TelegramUser telegramUser = telegramUserService.getByUser(user);
         if (telegramUser == null) {
             logger.warn("El usuario {} no tiene chat de Telegram asociado", user.getId());
@@ -1116,12 +1170,37 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
      * formatea primero y se añaden los nombres después.
      */
     private String getGameVoteCardMessage(Round round) {
+        return MessageFormat.format(i18NService.get("GAME_VOTE_CARD"), round.getRoundNumber(), round.getRoundBlackCard().getText(), getPlayedCardsList(round));
+    }
+
+    private String getGamePresidentVoteCardMessage(Round round, Player president) {
+        return MessageFormat.format(i18NService.get("GAME_VOTE_CARD_PRESIDENT"), round.getRoundNumber(), round.getRoundBlackCard().getText(), getPlayedCardsList(round), president.getUser().getName());
+    }
+
+    private String getPlayedCardsList(Round round) {
         StringBuilder playedCards = new StringBuilder();
-        for (PlayedCard playedCard : round.getPlayedCards()) {
+        for (PlayedCard playedCard : shuffledPlayedCards(round)) {
             playedCards.append("<b>").append(playedCard.getCard().getText()).append("</b>").append("\n");
         }
 
-        return MessageFormat.format(i18NService.get("GAME_VOTE_CARD"), round.getRoundNumber(), round.getRoundBlackCard().getText(), playedCards);
+        return playedCards.toString();
+    }
+
+    /**
+     * Las cartas jugadas, en un orden que no delata a quién es cada una.
+     * <p>
+     * En el orden de juego, la primera sería siempre la de la IA (juega en cuanto empieza la ronda)
+     * o la del humano más rápido. El orden se baraja con una semilla sacada de la ronda para que el
+     * grupo y los privados enseñen el mismo, y se parte de un orden por id para no depender del que
+     * devuelva la base de datos.
+     */
+    private List<PlayedCard> shuffledPlayedCards(Round round) {
+        List<PlayedCard> playedCards = new ArrayList<>(round.getPlayedCards());
+        playedCards.sort(Comparator.comparing(playedCard -> playedCard.getCard().getId()));
+
+        Collections.shuffle(playedCards, new Random(round.getId().getMostSignificantBits() ^ round.getId().getLeastSignificantBits()));
+
+        return playedCards;
     }
 
     private String getGameEndRoundMessage(Round round, PlayedCard winningCard) {
