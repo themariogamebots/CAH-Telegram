@@ -110,4 +110,27 @@ class SchemaBaselineTest {
         Assertions.assertEquals(EXPECTED_TAGS, countTags("en"));
     }
 
+    /**
+     * Fragmentos sin tilde (o con errata) que V2.1.1_1 corrige. La migración los sustituye con
+     * {@code REPLACE}, que no falla si no encuentra lo que busca: sin esto, un fragmento mal copiado
+     * dejaría el texto como estaba sin que nadie se enterase.
+     */
+    static final List<String> FIXED_TYPOS = List.of("Respondeme", "respondeme", "Aqui tienes", "se envien", "Estas gestionando", "escribiendole", "lenguage", "mas cartas", "Despublicalo", "algun tipo", "aun no", "Ya estas", "No estas", "para mas", "modo de puntuacion", "jugaran", "votaran");
+
+    static void assertTyposAreFixed(EntityManager entityManager) {
+        List<String> texts = entityManager.createQuery("SELECT t.text FROM Tag t WHERE t.lang.id = 'es'", String.class).getResultList();
+        for (String typo : FIXED_TYPOS) {
+            Assertions.assertTrue(texts.stream().noneMatch(text -> text.contains(typo)), () -> "sigue habiendo un texto con \"" + typo + "\"");
+        }
+    }
+
+    @Test
+    void spanishTextsHaveTheirAccents() {
+        assertTyposAreFixed(entityManager);
+
+        Assertions.assertEquals("Ya estás registrado. Consulta /help para más información.", i18NService.get("ERROR_USER_ALREADY_REGISTERED", "es"));
+        Assertions.assertEquals("Respóndeme con el número de la carta negra que deseas borrar.", i18NService.get("CARDS_BLACK_CARD_DELETE", "es"));
+        Assertions.assertEquals("Answer me with the number of the black card you wish to delete.", i18NService.get("CARDS_BLACK_CARD_DELETE", "en"));
+    }
+
 }

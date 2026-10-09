@@ -43,10 +43,12 @@ class SchemaBaselineMariaDbTest {
     /**
      * Debe ser >= la versión fijada en {@code SchemaGenerator.MARIADB_VERSION} (10.7), que es la que
      * decide si los UUID se generan como {@code uuid} o como {@code binary(16)}. Conviene que sea
-     * además la de producción: 10.7 y 11.4 generan el mismo esquema, pero una versión futura podría
-     * cambiar algún otro mapeo y este test solo lo detectará si prueba con esa versión.
+     * además la de producción (11.8): 10.7 y 11.4 generan el mismo esquema, pero una versión futura
+     * podría cambiar algún otro mapeo y este test solo lo detectará si prueba con esa versión. Ya
+     * hubo una diferencia de comportamiento: desde 11.6.2 {@code innodb_snapshot_isolation} viene
+     * activado y dos transacciones que escriben la misma fila fallan con el error 1020.
      */
-    private static final String IMAGE = "mariadb:11.4";
+    private static final String IMAGE = "mariadb:11.8";
 
     @Container
     @ServiceConnection
@@ -122,6 +124,17 @@ class SchemaBaselineMariaDbTest {
         String welcome = i18NService.get("PLAYER_WELCOME", "es");
         Assertions.assertNotEquals("PLAYER_WELCOME", welcome, "el tag no está en la tabla");
         Assertions.assertTrue(welcome.contains("\n"), "los \\n del SQL deben llegar como saltos de línea");
+    }
+
+    /**
+     * Además de que V2.1.1_1 se aplique, comprueba que las tildes que mete llegan enteras: el
+     * {@code REPLACE} corre en el servidor, con su juego de caracteres.
+     */
+    @Test
+    void spanishTextsHaveTheirAccents() {
+        SchemaBaselineTest.assertTyposAreFixed(entityManager);
+
+        Assertions.assertEquals("Ya estás registrado. Consulta /help para más información.", i18NService.get("ERROR_USER_ALREADY_REGISTERED", "es"));
     }
 
 }
