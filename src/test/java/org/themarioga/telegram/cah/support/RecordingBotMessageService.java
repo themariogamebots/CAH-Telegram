@@ -10,6 +10,13 @@ import org.themarioga.commons.telegram.services.intf.BotMessageService;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -57,10 +64,18 @@ public class RecordingBotMessageService implements BotMessageService {
     private final String botName;
     private final PendingReplyRegistry pendingReplies;
 
-    private final List<Sent> sent = new ArrayList<>();
-    private final List<String> answeredCallbacks = new ArrayList<>();
+    // Concurrente porque, en segundo plano, se escribe desde el hilo de los envíos asíncronos
+    private final List<Sent> sent = new CopyOnWriteArrayList<>();
+    private final List<String> answeredCallbacks = new CopyOnWriteArrayList<>();
     private final List<Long> deletedFrom = new ArrayList<>();
     private final AtomicInteger nextMessageId = new AtomicInteger(1000);
+
+    private record PendingSend(CompletableFuture<Message> future, Message message) {
+    }
+
+    private final ExecutorService background = Executors.newSingleThreadExecutor();
+    private final ConcurrentLinkedQueue<PendingSend> pendingSends = new ConcurrentLinkedQueue<>();
+    private volatile boolean completeInBackground = false;
 
     public RecordingBotMessageService(String botName, PendingReplyRegistry pendingReplies) {
         this.botName = botName;
@@ -130,8 +145,11 @@ public class RecordingBotMessageService implements BotMessageService {
     }
 
     /**
-     * Se completa en el hilo actual, no en otro: así los tests son deterministas. Que la sesión
-     * viaje bien a otro hilo lo comprueba {@code TelegramSessionTest} por su cuenta.
+     * Por defecto se completa en el hilo actual, no en otro: así los tests son deterministas. Que la
+     * sesión viaje bien a otro hilo lo comprueba {@code TelegramSessionTest} por su cuenta.
+     * <p>
+     * Con {@link #completeInBackground(boolean)} se completa en otro hilo, como hace OkHttp en
+     * producción: la continuación corre entonces fuera de cualquier transacción del test.
      */
     @Override
     public CompletableFuture<Message> sendMessageAsync(long chatId, String text) {
@@ -140,7 +158,38 @@ public class RecordingBotMessageService implements BotMessageService {
 
         Message message = Message.builder().messageId(messageId).chat(org.telegram.telegrambots.meta.api.objects.chat.Chat.builder().id(chatId).type("private").build()).build();
 
-        return CompletableFuture.completedFuture(message);
+        if (!completeInBackground) return CompletableFuture.completedFuture(message);
+
+        // No se completa hasta awaitAsync(): si el hilo de fondo se adelantara a que el servicio
+        // encadene la continuación, esta correría en el hilo del test, dentro de su transacción, y
+        // el test dejaría de ver lo que pasa en producción.
+        CompletableFuture<Message> future = new CompletableFuture<>();
+        pendingSends.add(new PendingSend(future, message));
+
+        return future;
+    }
+
+    public void completeInBackground(boolean completeInBackground) {
+        this.completeInBackground = completeInBackground;
+    }
+
+    /**
+     * Completa, en el hilo de fondo, los envíos asíncronos pendientes y los que vayan encadenando, y
+     * espera a que terminen sus continuaciones.
+     */
+    public void awaitAsync() {
+        PendingSend pending;
+        while ((pending = pendingSends.poll()) != null) {
+            PendingSend send = pending;
+            try {
+                background.submit(() -> send.future().complete(send.message())).get(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            } catch (ExecutionException | TimeoutException e) {
+                throw new IllegalStateException("La continuación de un envío asíncrono no ha terminado", e);
+            }
+        }
     }
 
     @Override

@@ -6,8 +6,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardRow;
@@ -108,12 +110,13 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
     private final BotProperties botProperties;
     private final RoomService roomService;
     private final TelegramAdmins admins;
+    private final TransactionTemplate transactionTemplate;
 
     /** Interruptor de los envíos masivos; se conmuta con /toggleglobalmessages. */
     private Boolean canSendGlobalMessages = Boolean.TRUE;
 
     @Autowired
-    public CCLHTelegramServiceImpl(@Qualifier("cclhBotMessageService") BotMessageService botMessageService, CAHService cahService, GameService gameService, PlayerService playerService, RoundService roundService, CardService cardService, DictionaryService dictionaryService, UserService userService, TelegramUserService telegramUserService, TelegramGameService telegramGameService, TelegramRoomResolver roomResolver, I18NService i18NService, ErrorMessageResolver errorMessageResolver, GameConfig gameConfig, BotProperties botProperties, RoomService roomService, TelegramAdmins admins) {
+    public CCLHTelegramServiceImpl(@Qualifier("cclhBotMessageService") BotMessageService botMessageService, CAHService cahService, GameService gameService, PlayerService playerService, RoundService roundService, CardService cardService, DictionaryService dictionaryService, UserService userService, TelegramUserService telegramUserService, TelegramGameService telegramGameService, TelegramRoomResolver roomResolver, I18NService i18NService, ErrorMessageResolver errorMessageResolver, GameConfig gameConfig, BotProperties botProperties, RoomService roomService, TelegramAdmins admins, PlatformTransactionManager transactionManager) {
         this.botMessageService = botMessageService;
         this.cahService = cahService;
         this.gameService = gameService;
@@ -131,6 +134,7 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
         this.botProperties = botProperties;
         this.roomService = roomService;
         this.admins = admins;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
     // ///////////// Usuario //////////////////
@@ -193,15 +197,15 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
         // los updates; la sesión se lleva a la continuación, que corre en otro hilo.
         TelegramSession session = TelegramSession.capture();
 
-        botMessageService.sendMessageAsync(chatId, creating).thenCompose(group -> botMessageService.sendMessageAsync(creatorChatId, creating).thenCompose(creatorMessage -> botMessageService.sendMessageAsync(creatorChatId, i18NService.get("PLAYER_JOINING")).thenAccept(playerMessage -> session.run(() -> createGame(chatId, chatTitle, group.getMessageId(), creatorMessage.getMessageId(), playerMessage.getMessageId()))))).exceptionally(e -> {
+        botMessageService.sendMessageAsync(chatId, creating).thenCompose(group -> botMessageService.sendMessageAsync(creatorChatId, creating).thenCompose(creatorMessage -> botMessageService.sendMessageAsync(creatorChatId, i18NService.get("PLAYER_JOINING")).thenAccept(playerMessage -> session.run(() -> inTransaction(() -> createGame(chatId, chatTitle, group.getMessageId(), creatorMessage.getMessageId(), playerMessage.getMessageId())))))).exceptionally(e -> {
             logger.error("No se ha podido crear la partida en el chat {}: {}", chatId, e.getMessage(), e);
 
             return null;
         });
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = ApplicationException.class)
-    protected void createGame(long chatId, String chatTitle, int groupMessageId, int creatorMessageId, int playerMessageId) {
+    /** Continuación de {@link #startCreatingGame}: corre en el hilo de OkHttp, dentro de {@link #inTransaction}. */
+    private void createGame(long chatId, String chatTitle, int groupMessageId, int creatorMessageId, int playerMessageId) {
         try {
             Room room = roomResolver.resolveRoom(chatId, chatTitle);
 
@@ -362,7 +366,7 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
             long playerChatId = chatId();
             TelegramSession session = TelegramSession.capture();
 
-            botMessageService.sendMessageAsync(playerChatId, i18NService.get("PLAYER_JOINING")).thenAccept(joining -> session.run(() -> joinGame(chatId, joining.getMessageId(), callbackQueryId))).exceptionally(e -> {
+            botMessageService.sendMessageAsync(playerChatId, i18NService.get("PLAYER_JOINING")).thenAccept(joining -> session.run(() -> inTransaction(() -> joinGame(chatId, joining.getMessageId(), callbackQueryId)))).exceptionally(e -> {
                 logger.error("No se ha podido unir al jugador {}: {}", playerChatId, e.getMessage(), e);
 
                 return null;
@@ -370,8 +374,8 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
         });
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = ApplicationException.class)
-    protected void joinGame(long chatId, int playerMessageId, String callbackQueryId) {
+    /** Continuación de {@link #gameJoinQuery}: corre en el hilo de OkHttp, dentro de {@link #inTransaction}. */
+    private void joinGame(long chatId, int playerMessageId, String callbackQueryId) {
         guarded(() -> {
             TelegramGame telegramGame = getGameByChatId(chatId);
 
@@ -1121,6 +1125,22 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
             throw new GameOnlyCreatorCanPerformActionException();
 
         return telegramGame;
+    }
+
+    /**
+     * Abre una transacción para la continuación de un envío asíncrono.
+     * <p>
+     * La continuación corre en un hilo de OkHttp, fuera de la transacción del update, y un
+     * {@code @Transactional} en el propio método no sirve: se llama desde esta misma clase y no pasa
+     * por el proxy de Spring. Sin esto no hay sesión de Hibernate y la primera asociación perezosa
+     * (la sala de la partida, su creador) lanza {@code LazyInitializationException}. Así fallaban en
+     * producción crear partida y unirse a ella.
+     * <p>
+     * Se une a la transacción en curso si la hay, que es lo que pasa en los tests: allí el envío se
+     * completa en el mismo hilo.
+     */
+    private void inTransaction(Runnable action) {
+        transactionTemplate.executeWithoutResult(status -> action.run());
     }
 
     // ///////////// Errores //////////////////
