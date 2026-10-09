@@ -504,9 +504,13 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
             Game game = cahService.playCard(telegramGame.getGame().getRoom(), cardOf(data));
             Round round = game.getCurrentRound();
 
-            if (round.getStatus() == RoundStatusEnum.PLAYING) {
-                showPlayedCardToItsPlayer(telegramGame, playerOf(game, user));
-            } else if (round.getStatus() == RoundStatusEnum.VOTING) {
+            // Siempre, y antes de mirar cómo queda la ronda: si es el último en jugar, fuera de
+            // democracia solo se le escribe al presidente y este jugador se quedaba con los botones
+            // de las cartas. Lo que venga después (sus opciones de voto, la mano de la ronda
+            // siguiente) edita este mismo mensaje.
+            showPlayedCardToItsPlayer(telegramGame, playerOf(game, user));
+
+            if (round.getStatus() == RoundStatusEnum.VOTING) {
                 openVoting(telegramGame, game, round);
             } else if (round.getStatus() == RoundStatusEnum.ENDING) {
                 // Una IA presidía la ronda y ha elegido ganadora en cuanto se abrió la votación. El

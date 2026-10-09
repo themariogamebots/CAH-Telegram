@@ -341,6 +341,30 @@ class GameFlowTest extends BotFlowTest {
      * tres. En las rondas de los humanos el grupo ve las cartas mientras decide el presidente; en la
      * de la IA, la ronda se cierra sola con la jugada del último humano y la partida termina.
      */
+    /**
+     * Al último en jugar la ronda pasa a votación y, fuera de democracia, solo se le escribe al
+     * presidente: su mensaje privado se quedaba con los botones de las cartas.
+     */
+    @Test
+    void theLastPlayerToPickACardLosesTheCardButtons() {
+        createGame();
+        joinAs(PLAYER_TWO);
+        addAIPlayer();
+
+        logInAs(CREATOR, GROUP_CHAT, "group");
+        cahService.setVotationMode(room(), VotationModeEnum.CLASSIC);
+        game.gameStartQuery(GROUP_CHAT, "cb");
+
+        // Preside el creador y la IA ya ha jugado: el segundo jugador es el último
+        messages.clear();
+        playFirstCardAs(PLAYER_TWO);
+
+        Assertions.assertEquals(RoundStatusEnum.VOTING, gameService.getByRoom(room()).getCurrentRound().getStatus());
+        RecordingBotMessageService.Sent hand = messages.lastTo(PLAYER_TWO);
+        Assertions.assertNotNull(hand, "hay que actualizarle el mensaje");
+        Assertions.assertTrue(hand.callbackData().isEmpty(), "no puede seguir viendo botones para elegir carta");
+    }
+
     @Test
     void aClassicGameWithAnAIPlayerIsPlayedToTheEnd() {
         createGame();
