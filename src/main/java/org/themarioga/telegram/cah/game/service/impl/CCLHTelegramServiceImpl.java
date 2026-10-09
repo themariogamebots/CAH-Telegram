@@ -142,20 +142,52 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
     @Override
     @Transactional(propagation = Propagation.REQUIRED, rollbackFor = ApplicationException.class)
     public void registerUser(org.telegram.telegrambots.meta.api.objects.User from) {
-        try {
-            telegramUserService.register(from);
+        // Los dos bots comparten usuarios: registrado es haberlo hecho en cualquiera de ellos
+        TelegramUser existing = telegramUserService.getByTelegramId(from.getId());
+        boolean alreadyRegistered = existing != null && Boolean.TRUE.equals(existing.getUser().getActive());
 
-            botMessageService.sendMessage(from.getId(), i18NService.get("PLAYER_WELCOME", from.getLanguageCode()));
+        try {
+            TelegramUser telegramUser = telegramUserService.register(from);
+
+            // Quien bloqueó el bot queda desactivado, y /start es lo que se le pide para volver
+            if (!Boolean.TRUE.equals(telegramUser.getUser().getActive())) {
+                userService.setActive(telegramUser.getUser(), true);
+            }
         } catch (UserAlreadyExistsException e) {
             logger.warn("El usuario {} ya estaba registrado en el otro bot.", from.getId());
 
-            botMessageService.sendMessage(from.getId(), i18NService.get("PLAYER_WELCOME", from.getLanguageCode()));
+            alreadyRegistered = true;
         }
+
+        botMessageService.sendMessage(from.getId(), i18NService.get(alreadyRegistered ? "ERROR_USER_ALREADY_REGISTERED" : "PLAYER_WELCOME", from.getLanguageCode()));
     }
 
     @Override
     public void loginUser(long telegramId) {
-        requireSession();
+        // Es lo primero que hace cada comando y cada botón: si quien lo usa no ha hecho /start, se
+        // le dice aquí, porque los handlers solo dejan el error en el log
+        if (SecurityUtils.getUser() == null) {
+            tellUnregisteredUser();
+
+            throw new UserDoesntExistsException();
+        }
+    }
+
+    /**
+     * Sin sesión no hay idioma del usuario ni chat privado conocido: se contesta en el idioma de su
+     * Telegram, a la propia pulsación si venía de un botón y, si no, en el chat donde escribió.
+     */
+    private void tellUnregisteredUser() {
+        String message = i18NService.get("ERROR_GAME_USER_DOESNT_EXISTS", TelegramSecurityUtils.getLanguageCode());
+
+        String callbackQueryId = TelegramSecurityUtils.getCallbackQueryId();
+        if (callbackQueryId != null) {
+            botMessageService.answerCallbackQuery(callbackQueryId, message);
+            return;
+        }
+
+        Long chatId = TelegramSecurityUtils.getChatId();
+        if (chatId != null) botMessageService.sendMessage(chatId, message);
     }
 
     @Override

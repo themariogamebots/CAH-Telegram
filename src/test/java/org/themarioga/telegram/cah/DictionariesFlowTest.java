@@ -29,6 +29,8 @@ class DictionariesFlowTest extends BotFlowTest {
     private DictionaryService dictionaryService;
     @Autowired
     private CardService cardService;
+    @Autowired
+    private org.themarioga.commons.engine.services.intf.I18NService i18NService;
     private final RecordingBotMessageService messages = DICTIONARIES_MESSAGES;
 
     private User owner;
@@ -147,6 +149,15 @@ class DictionariesFlowTest extends BotFlowTest {
 
     private Dictionary dictionaryNamed(String name) {
         return dictionaryService.getDictionariesByCreator(owner).stream().filter(d -> d.getName().equals(name)).findFirst().orElseThrow();
+    }
+
+
+    @Test
+    void anActionBySomeoneWithoutStartTellsThemToRegister() {
+        asUnregisteredUser(700L, 700L, "private", false);
+
+        Assertions.assertThrows(org.themarioga.commons.engine.exceptions.user.UserDoesntExistsException.class, () -> dictionaries.loginUser(700L));
+        Assertions.assertEquals(i18NService.get("ERROR_GAME_USER_DOESNT_EXISTS", "es"), messages.lastTo(700L).text());
     }
 
 }

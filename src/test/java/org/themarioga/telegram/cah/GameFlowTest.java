@@ -53,6 +53,8 @@ class GameFlowTest extends BotFlowTest {
     private org.themarioga.engine.cah.services.intf.game.RoundResultService roundResultService;
     @Autowired
     private org.themarioga.commons.engine.services.intf.UserService userService;
+    @Autowired
+    private org.themarioga.commons.engine.services.intf.I18NService i18NService;
 
     private final RecordingBotMessageService messages = CCLH_MESSAGES;
 
@@ -68,6 +70,51 @@ class GameFlowTest extends BotFlowTest {
 
         messages.clear();
     }
+
+    // ///////////// Registro //////////////////
+
+    @Test
+    void startWelcomesANewUser() {
+        game.registerUser(telegramUser(600L, "nuevo"));
+
+        Assertions.assertEquals(i18NService.get("PLAYER_WELCOME", "es"), messages.lastTo(600L).text());
+    }
+
+    @Test
+    void startTellsARegisteredUserThatTheyAlreadyExist() {
+        game.registerUser(telegramUser(PLAYER_TWO, "segundo"));
+
+        Assertions.assertEquals(i18NService.get("ERROR_USER_ALREADY_REGISTERED", "es"), messages.lastTo(PLAYER_TWO).text());
+    }
+
+    @Test
+    void startReactivatesADisabledUserAndWelcomesThem() {
+        User disabled = telegramUserService.getByTelegramId(PLAYER_TWO).getUser();
+        userService.setActive(disabled, false);
+
+        game.registerUser(telegramUser(PLAYER_TWO, "segundo"));
+
+        Assertions.assertTrue(telegramUserService.getByTelegramId(PLAYER_TWO).getUser().getActive(), "/start es lo que se le pide para volver");
+        Assertions.assertEquals(i18NService.get("PLAYER_WELCOME", "es"), messages.lastTo(PLAYER_TWO).text());
+    }
+
+    @Test
+    void aButtonPressedBySomeoneWithoutStartTellsThemToRegister() {
+        asUnregisteredUser(700L, GROUP_CHAT, "group", true);
+
+        Assertions.assertThrows(org.themarioga.commons.engine.exceptions.user.UserDoesntExistsException.class, () -> game.loginUser(700L));
+        Assertions.assertEquals(List.of(i18NService.get("ERROR_GAME_USER_DOESNT_EXISTS", "es")), messages.answeredCallbacks(), "se le contesta a la propia pulsación");
+    }
+
+    @Test
+    void aCommandSentBySomeoneWithoutStartTellsThemToRegister() {
+        asUnregisteredUser(700L, GROUP_CHAT, "group", false);
+
+        Assertions.assertThrows(org.themarioga.commons.engine.exceptions.user.UserDoesntExistsException.class, () -> game.loginUser(700L));
+        Assertions.assertEquals(i18NService.get("ERROR_GAME_USER_DOESNT_EXISTS", "es"), messages.lastTo(GROUP_CHAT).text(), "en el chat donde escribió");
+    }
+
+    // ///////////// Partida //////////////////
 
     @Test
     void creatingAGameWritesToTheGroupAndToTheCreator() {

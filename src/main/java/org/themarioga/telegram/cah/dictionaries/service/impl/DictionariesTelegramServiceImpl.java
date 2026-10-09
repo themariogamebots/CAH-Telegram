@@ -122,7 +122,30 @@ public class DictionariesTelegramServiceImpl implements DictionariesTelegramServ
 
     @Override
     public void loginUser(long telegramId) {
-        requireSession();
+        // Es lo primero que hace cada comando y cada botón: si quien lo usa no ha hecho /start, se
+        // le dice aquí, porque los handlers solo dejan el error en el log
+        if (SecurityUtils.getUser() == null) {
+            tellUnregisteredUser();
+
+            throw new UserDoesntExistsException();
+        }
+    }
+
+    /**
+     * Sin sesión no hay idioma del usuario ni chat privado conocido: se contesta en el idioma de su
+     * Telegram, a la propia pulsación si venía de un botón y, si no, en el chat donde escribió.
+     */
+    private void tellUnregisteredUser() {
+        String message = i18NService.get("ERROR_GAME_USER_DOESNT_EXISTS", TelegramSecurityUtils.getLanguageCode());
+
+        String callbackQueryId = TelegramSecurityUtils.getCallbackQueryId();
+        if (callbackQueryId != null) {
+            botMessageService.answerCallbackQuery(callbackQueryId, message);
+            return;
+        }
+
+        Long chatId = TelegramSecurityUtils.getChatId();
+        if (chatId != null) botMessageService.sendMessage(chatId, message);
     }
 
     @Override

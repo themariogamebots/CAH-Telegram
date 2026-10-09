@@ -115,6 +115,32 @@ public abstract class BotFlowTest {
         TelegramContextHolder.set(TelegramContext.from(update, "cclhtestbot", roomResolver));
     }
 
+    /**
+     * Alguien que no ha hecho /start: hay contexto de Telegram pero no sesión, que es lo que deja el
+     * interceptor cuando no encuentra al usuario.
+     *
+     * @param callback true para simular la pulsación de un botón en vez de un comando
+     */
+    protected void asUnregisteredUser(long telegramId, long chatId, String chatType, boolean callback) {
+        SecurityContextHolder.clearContext();
+
+        Update update;
+        if (callback) {
+            CallbackQuery callbackQuery = new CallbackQuery();
+            callbackQuery.setId("callback-de-pruebas");
+            callbackQuery.setFrom(telegramUser(telegramId, "u" + telegramId));
+            callbackQuery.setMessage(Message.builder().messageId(1).from(telegramUser(telegramId, "u" + telegramId)).chat(Chat.builder().id(chatId).type(chatType).title("Grupo de pruebas").build()).build());
+            callbackQuery.setData("noop");
+
+            update = new Update();
+            update.setCallbackQuery(callbackQuery);
+        } else {
+            update = update(telegramId, chatId, chatType);
+        }
+
+        TelegramContextHolder.set(TelegramContext.from(update, "cclhtestbot", roomResolver));
+    }
+
     private void logIn(TelegramUser telegramUser, long telegramId, Long chatId, String chatType) {
         SecurityUtils.setUserDetails(new TelegramUserDetails(telegramUser, admins.contains(telegramId) ? UserRole.ADMIN : UserRole.USER));
 
