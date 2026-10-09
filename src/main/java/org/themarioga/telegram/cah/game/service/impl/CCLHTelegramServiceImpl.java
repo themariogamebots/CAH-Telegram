@@ -961,7 +961,7 @@ public class CCLHTelegramServiceImpl implements CCLHTelegramService {
         if (groupChatId != null) {
             TelegramSession session = TelegramSession.capture();
 
-            botMessageService.sendMessageAsync(groupChatId, MessageFormat.format(i18NService.get("GAME_SELECT_CARD"), round.getRoundNumber(), round.getRoundBlackCard().getText())).thenAccept(blackCard -> session.run(() -> telegramGameService.setCurrentRoundMessageId(telegramGame, blackCard.getMessageId()))).exceptionally(e -> {
+            botMessageService.sendMessageAsync(groupChatId, MessageFormat.format(i18NService.get("GAME_SELECT_CARD"), round.getRoundNumber(), round.getRoundBlackCard().getText())).thenAccept(blackCard -> session.run(() -> telegramGameService.setCurrentRoundMessageId(game, blackCard.getMessageId()))).exceptionally(e -> {
                 logger.error("No se ha podido enviar la carta negra: {}", e.getMessage(), e);
 
                 return null;

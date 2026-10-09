@@ -25,7 +25,11 @@ public interface TelegramGameService {
 
     List<TelegramGame> getAll();
 
-    void setCurrentRoundMessageId(TelegramGame telegramGame, int messageId);
+    /**
+     * Apunta el mensaje de la ronda en curso. Se llama desde la continuación de un envío asíncrono,
+     * así que trabaja sobre su propia copia de la partida y no sobre la del update que la lanzó.
+     */
+    void setCurrentRoundMessageId(Game game, int messageId);
 
     /**
      * Id del chat de Telegram en el que se juega una partida. Es el camino que permite escribir al

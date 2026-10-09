@@ -64,10 +64,15 @@ public class TelegramGameServiceImpl implements TelegramGameService {
 
     @Override
     @Transactional(propagation = Propagation.REQUIRED, rollbackFor = ApplicationException.class)
-    public void setCurrentRoundMessageId(TelegramGame telegramGame, int messageId) {
-        telegramGame.setCurrentRoundMessageId(messageId);
+    public void setCurrentRoundMessageId(Game game, int messageId) {
+        // Se carga la partida en esta transacción en vez de recibirla: la del update sigue abierta en
+        // otro hilo, y si se modificara ese mismo objeto las dos transacciones escribirían la fila.
+        // MariaDB 11.8 rechaza la segunda ("Record has changed since last read") y deshacía el
+        // arranque entero de la partida.
+        TelegramGame telegramGame = telegramGameDao.getByGame(game);
+        if (telegramGame == null) return;
 
-        telegramGameDao.createOrUpdate(telegramGame);
+        telegramGame.setCurrentRoundMessageId(messageId);
     }
 
     @Override

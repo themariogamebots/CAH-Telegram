@@ -20,6 +20,7 @@ import org.themarioga.engine.cah.services.intf.dictionaries.CardService;
 import org.themarioga.engine.cah.services.intf.dictionaries.DictionaryService;
 import org.themarioga.engine.cah.services.intf.game.GameService;
 import org.themarioga.telegram.cah.game.service.intf.CCLHTelegramService;
+import org.themarioga.telegram.cah.services.intf.TelegramGameService;
 import org.themarioga.telegram.cah.support.BotFlowTest;
 import org.themarioga.telegram.cah.support.RecordingBotMessageService;
 
@@ -41,6 +42,7 @@ class AsyncGameFlowTest extends BotFlowTest {
     private static final long GROUP_CHAT = -100900L;
     private static final long CREATOR = 900L;
     private static final long PLAYER_TWO = 901L;
+    private static final long PLAYER_THREE = 902L;
 
     @Autowired
     private CCLHTelegramService game;
@@ -56,6 +58,8 @@ class AsyncGameFlowTest extends BotFlowTest {
     private PlatformTransactionManager transactionManager;
     @Autowired
     private EntityManager entityManager;
+    @Autowired
+    private TelegramGameService telegramGameService;
 
     private final RecordingBotMessageService messages = CCLH_MESSAGES;
 
@@ -70,6 +74,7 @@ class AsyncGameFlowTest extends BotFlowTest {
 
         User creator = givenRegisteredUser(CREATOR, "creador_async");
         givenRegisteredUser(PLAYER_TWO, "segundo_async");
+        givenRegisteredUser(PLAYER_THREE, "tercero_async");
 
         dictionaryId = tx.execute(status -> {
             Dictionary dictionary = dictionaryService.create("Diccionario asíncrono", creator);
@@ -119,6 +124,45 @@ class AsyncGameFlowTest extends BotFlowTest {
 
         Assertions.assertEquals(2, playersInGame(), "el segundo jugador tiene que haber entrado");
         Assertions.assertTrue(messages.lastTo(GROUP_CHAT).text().contains("segundo_async"), "y la lista del grupo tiene que mostrarlo");
+    }
+
+    /**
+     * Cada paso abre su propia sesión, como cada update en producción: el jugador se carga antes que
+     * su partida, que llega como proxy de la clase base de Commons-Engine. Elegir carta fallaba con
+     * {@code ClassCastException} al castearla al {@code Game} de CAH.
+     */
+    @Test
+    void aStartedGameRecordsItsRoundMessageAndLetsPlayersPickACard() {
+        logInAs(CREATOR, GROUP_CHAT, "group");
+        game.startCreatingGame(GROUP_CHAT, "Grupo asíncrono");
+        messages.awaitAsync();
+        for (long player : new long[]{PLAYER_TWO, PLAYER_THREE}) {
+            logInAs(player, GROUP_CHAT, "group");
+            game.gameJoinQuery(GROUP_CHAT, "cb");
+            messages.awaitAsync();
+        }
+
+        logInAs(CREATOR, GROUP_CHAT, "group");
+        game.gameStartQuery(GROUP_CHAT, "cb");
+        messages.awaitAsync();
+
+        Assertions.assertNotNull(tx.execute(status -> telegramGameService.getByGame(gameService.getByRoom(room())).getCurrentRoundMessageId()), "el mensaje de la carta negra tiene que quedar apuntado");
+
+        // Juega quien no preside la ronda
+        long picker = tx.execute(status -> {
+            UUID president = gameService.getByRoom(room()).getCurrentRound().getRoundPresident().getUser().getId();
+            return telegramUserService.getByTelegramId(PLAYER_TWO).getUser().getId().equals(president) ? PLAYER_THREE : PLAYER_TWO;
+        });
+        String cardId = tx.execute(status -> {
+            UUID user = telegramUserService.getByTelegramId(picker).getUser().getId();
+            return gameService.getByRoom(room()).getPlayers().stream().filter(p -> p.getUser().getId().equals(user)).findFirst().orElseThrow().getHand().get(0).getCard().getId().toString();
+        });
+
+        logInAs(picker, picker, "private");
+        game.playerPlayCardQuery("cb", cardId);
+        messages.awaitAsync();
+
+        Assertions.assertEquals(1, (int) tx.execute(status -> gameService.getByRoom(room()).getCurrentRound().getPlayedCards().size()), "la carta tiene que quedar jugada");
     }
 
     private int playersInGame() {
